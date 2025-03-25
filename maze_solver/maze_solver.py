@@ -31,7 +31,7 @@ from .motor_control import initialize_motors, move_motors, move_motors_init_pos,
 from .image_processing import (
     initialize_camera, capture_image, load_image, crop_image, convert_to_grayscale,
     resize_image, enhance_walls, detect_ball, mark_points_on_image, plot_images,
-    thicken_walls, crop_around_point
+    thicken_walls, crop_around_point, detect_walls
 )
 from .path_finding import (
     find_path, solve_maze, get_current_position, calculate_distance,
@@ -163,20 +163,21 @@ class MazeSolver:
             tuple: (processed_image, original_scale_image, ball_position)
         """
         try:
+            logger.info("Starting image processing...")
+            
             # Crop the image
+            logger.info("Cropping image...")
             img_cropped = crop_image(image)
+            logger.info(f"Cropped image shape: {img_cropped.shape}")
             
-            # Convert to grayscale
-            img_gray = convert_to_grayscale(img_cropped)
-            
-            # Resize for faster processing
-            img_resized = resize_image(img_gray)
-            
-            # Thicken walls for better path finding
-            maze_binary = thicken_walls(img_resized)
+            # Detect walls to create binary maze
+            logger.info("Detecting walls...")
+            maze_binary = detect_walls(img_cropped, plot_result=self.config['control']['debug_visualization'])
+            logger.info(f"Wall detection result shape: {maze_binary.shape if maze_binary is not None else 'None'}")
             
             # Detect the ball position in the original scale image
-            cx, cy = detect_ball(img_gray, False)
+            logger.info("Detecting ball...")
+            cx, cy = detect_ball(img_cropped, self.config['control']['debug_visualization'])
             
             if len(cx) == 0 or len(cy) == 0:
                 logger.warning("Ball not detected in the image")
@@ -185,10 +186,11 @@ class MazeSolver:
                 ball_position = (cy[0], cx[0])
                 logger.info(f"Ball detected at position: {ball_position}")
             
-            return maze_binary, img_gray, ball_position
+            return maze_binary, img_cropped, ball_position
         
         except Exception as e:
             logger.error(f"Image processing failed: {str(e)}")
+            logger.exception("Full traceback:")  # This will print the full traceback
             return None, None, None
     
     def solve_maze_from_image(self, image):

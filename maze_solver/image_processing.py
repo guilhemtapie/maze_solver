@@ -30,22 +30,49 @@ DEFAULT_CONFIG = {
         'current_image_template': "/home/labybille/Desktop/new_proj/code_python/images/current_image{}.jpg"
     },
     'crop_dimensions': {
-        'y_min': 0,
-        'y_max': 480,
-        'x_min': 80,
-        'x_max': 560
+        'y_min': 100,    
+        'y_max': 950,    
+        'x_min': 150,    
+        'x_max': 850     
     },
     'ball_detection': {
-        'sigma': 3,
-        'low_threshold': 0.55,
-        'high_threshold': 0.8,
-        'min_radius': 8,
-        'max_radius': 12,
+        'sigma': 0.5,            # Reduced to detect finer edges
+        'low_threshold': 5,      # Lowered to detect more edges
+        'high_threshold': 15,    # Lowered to detect more edges
+        'min_radius': 28,        # Adjusted based on your ball size
+        'max_radius': 36,        # Adjusted based on your ball size
         'radius_step': 1,
         'max_peaks': 1
     },
-    'resize_dimensions': (100, 100)
+    'wall_detection': {
+        'brown_hue_low': 0.05,   # Brown color hue range
+        'brown_hue_high': 0.15,
+        'saturation_low': 0.3,   # Saturation range for brown
+        'saturation_high': 0.8,
+        'value_low': 0.1,        # Value range for dark brown
+        'value_high': 0.5,
+        'closing_kernel': 5,     # Size of morphological operation kernels
+        'opening_kernel': 3
+    },
+    'resize_dimensions': (1000, 1000)
 }
+
+# Add detect_walls to the list of exposed functions at the top of the file
+__all__ = [
+    'initialize_camera',
+    'capture_image',
+    'load_image',
+    'crop_image',
+    'convert_to_grayscale',
+    'resize_image',
+    'enhance_walls',
+    'detect_ball',
+    'mark_points_on_image',
+    'plot_images',
+    'thicken_walls',
+    'crop_around_point',
+    'detect_walls'
+]
 
 # Camera functions
 def initialize_camera():
@@ -57,7 +84,8 @@ def initialize_camera():
     """
     try:
         camera = Picamera2()
-        camera.start_preview(Preview.QTGL)
+        camera.preview_configuration.main.size = (DEFAULT_CONFIG['resize_dimensions'][0], DEFAULT_CONFIG['resize_dimensions'][1])
+        camera.configure("preview")
         camera.start()
         time.sleep(2)  # Allow camera to warm up
         logger.info("Camera initialized successfully")
@@ -218,10 +246,10 @@ def enhance_walls(image, kernel_size=3):
 # Ball detection functions
 def detect_ball(image, plot_result=False, config=None):
     """
-    Detect balls in the image using Hough circle transform.
+    Detect balls in the image using color thresholding and blob detection.
     
     Args:
-        image (numpy.ndarray): Input grayscale image
+        image (numpy.ndarray): Input image (RGB or grayscale)
         plot_result (bool): Whether to plot the detection result
         config (dict, optional): Configuration dictionary
         
@@ -232,36 +260,103 @@ def detect_ball(image, plot_result=False, config=None):
         config = DEFAULT_CONFIG
     
     try:
-        # Get ball detection parameters
-        ball_config = config['ball_detection']
+        # Debug logging for input image
+        logger.info(f"Input image shape: {image.shape}")
+        logger.info(f"Input image dtype: {image.dtype}")
         
-        # Detect edges
-        edges = canny(image, sigma=ball_config['sigma'], 
-                     low_threshold=ball_config['low_threshold'], 
-                     high_threshold=ball_config['high_threshold'])
+        # Ensure we have an RGB image
+        if len(image.shape) == 2:  # If grayscale, convert to RGB
+            image = color.gray2rgb(image)
         
-        # Detect circles
-        hough_radii = np.arange(ball_config['min_radius'], 
-                               ball_config['max_radius'], 
-                               ball_config['radius_step'])
-        hough_res = hough_circle(edges, hough_radii)
+        # Convert to HSV color space for better color segmentation
+        hsv_image = color.rgb2hsv(image)
         
-        # Select the most prominent circles
-        accums, cx, cy, radii = hough_circle_peaks(hough_res, hough_radii,
-                                                  total_num_peaks=ball_config['max_peaks'])
+        # Define color range for dark red ball
+        # First range (for primary red hues)
+        red_low1 = np.array([0.95, 0.5, 0.2])  # Higher saturation to exclude brown
+        red_high1 = np.array([1.0, 1.0, 0.7])  # Lower value for darker red
         
-        if len(cx) > 0:
-            logger.info(f"Ball detected at position: ({cx[0]}, {cy[0]})")
+        # Second range (for red hues near 0)
+        red_low2 = np.array([0.0, 0.5, 0.2])
+        red_high2 = np.array([0.05, 1.0, 0.7])
+        
+        # Create mask for red color (combine both ranges)
+        mask1 = np.all((hsv_image >= red_low1) & (hsv_image <= red_high1), axis=2)
+        mask2 = np.all((hsv_image >= red_low2) & (hsv_image <= red_high2), axis=2)
+        mask = mask1 | mask2
+        
+        # Apply morphological operations to clean up the mask
+        # Use smaller kernels to avoid merging with wall regions
+        mask = scnd.binary_closing(mask, structure=np.ones((3,3)))
+        mask = scnd.binary_opening(mask, structure=np.ones((2,2)))
+        
+        # Find connected components (blobs)
+        labeled_mask, num_features = scnd.label(mask)
+        
+        if num_features > 0:
+            # Find the largest blob (assuming it's the ball)
+            sizes = np.bincount(labeled_mask.ravel())[1:]
+            largest_blob = np.argmax(sizes) + 1
+            
+            # Get the centroid of the largest blob
+            cy, cx = np.mean(np.where(labeled_mask == largest_blob), axis=1)
+            
+            logger.info(f"Ball detected at position: ({int(cx)}, {int(cy)})")
+            
+            if plot_result:
+                # Plot the detection result
+                plt.figure(figsize=(15, 5))
+                
+                # Show original image
+                plt.subplot(1, 3, 1)
+                plt.imshow(image)
+                plt.title("Original Image")
+                plt.axis('off')
+                
+                # Show color mask
+                plt.subplot(1, 3, 2)
+                plt.imshow(mask, cmap='gray')
+                plt.title("Color Mask")
+                plt.axis('off')
+                
+                # Show result
+                result_img = image.copy()
+                rr, cc = circle_perimeter(int(cy), int(cx), 20, shape=image.shape)
+                result_img[rr, cc] = [1, 0, 0]  # Red circle
+                plt.subplot(1, 3, 3)
+                plt.imshow(result_img)
+                plt.title("Detection Result")
+                plt.axis('off')
+                
+                plt.tight_layout()
+                plt.show()
+            
+            return [int(cx)], [int(cy)]
         else:
             logger.warning("No ball detected")
-        
-        if plot_result and len(cx) > 0:
-            plot_ball_detection(image, cy, cx, radii)
-        
-        return cx, cy
+            if plot_result:
+                plt.figure(figsize=(15, 5))
+                
+                # Show original image
+                plt.subplot(1, 3, 1)
+                plt.imshow(image)
+                plt.title("Original Image")
+                plt.axis('off')
+                
+                # Show color mask
+                plt.subplot(1, 3, 2)
+                plt.imshow(mask, cmap='gray')
+                plt.title("Color Mask")
+                plt.axis('off')
+                
+                plt.tight_layout()
+                plt.show()
+            
+            return [], []
     
     except Exception as e:
         logger.error(f"Failed to detect ball: {str(e)}")
+        logger.error(f"Error occurred with image shape: {image.shape}")
         return [], []
 
 def plot_ball_detection(image, cy, cx, radii):
@@ -445,4 +540,79 @@ stucturing_element = create_structuring_element
 detectbille = detect_ball
 redim_image = resize_image
 eppaissir_les_murs = thicken_walls
-decoupage = crop_around_point 
+decoupage = crop_around_point
+
+def detect_walls(image, plot_result=False, config=None):
+    """
+    Detect maze walls using color thresholding and morphological operations.
+    
+    Args:
+        image (numpy.ndarray): Input image (RGB or grayscale)
+        plot_result (bool): Whether to plot the detection result
+        config (dict, optional): Configuration dictionary
+        
+    Returns:
+        numpy.ndarray: Binary mask of detected walls
+    """
+    try:
+        logger.info("Starting wall detection...")
+        # Ensure we have an RGB image
+        if len(image.shape) == 2:
+            image = color.gray2rgb(image)
+        
+        # Convert to HSV color space for better color segmentation
+        hsv_image = color.rgb2hsv(image)
+        
+        # Define color range for dark brown walls
+        # Brown is a dark orange, which in HSV has a hue around 0.05-0.15
+        brown_low = np.array([0.05, 0.3, 0.1])   # Dark brown lower bound
+        brown_high = np.array([0.15, 0.8, 0.5])  # Dark brown upper bound
+        
+        # Create mask for brown color
+        mask = np.all((hsv_image >= brown_low) & (hsv_image <= brown_high), axis=2)
+        
+        # Apply morphological operations to clean up the mask
+        # Use larger kernels for walls to connect nearby segments
+        mask = scnd.binary_closing(mask, structure=np.ones((5,5)))
+        mask = scnd.binary_opening(mask, structure=np.ones((3,3)))
+        
+        # Fill small holes
+        mask = scnd.binary_fill_holes(mask)
+        
+        # Invert the mask since walls should be True (1) and paths should be False (0)
+        mask = ~mask
+        
+        logger.info(f"Wall detection completed. Mask shape: {mask.shape}")
+        
+        if plot_result:
+            plt.figure(figsize=(15, 5))
+            
+            # Show original image
+            plt.subplot(1, 3, 1)
+            plt.imshow(image)
+            plt.title("Original Image")
+            plt.axis('off')
+            
+            # Show wall mask
+            plt.subplot(1, 3, 2)
+            plt.imshow(mask, cmap='gray')
+            plt.title("Wall Mask")
+            plt.axis('off')
+            
+            # Show overlay
+            overlay = image.copy()
+            overlay[mask] = [1, 0, 0]  # Mark walls in red
+            plt.subplot(1, 3, 3)
+            plt.imshow(overlay)
+            plt.title("Wall Detection Result")
+            plt.axis('off')
+            
+            plt.tight_layout()
+            plt.show()
+        
+        return mask
+    
+    except Exception as e:
+        logger.error(f"Failed to detect walls: {str(e)}")
+        logger.exception("Full traceback:")
+        return np.zeros_like(image[:,:,0]) if len(image.shape) == 3 else np.zeros_like(image) 

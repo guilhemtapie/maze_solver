@@ -51,6 +51,17 @@ DEFAULT_CONFIG = {
         'marker_color': (0, 255, 0),  # Green
         'marker_size_range': (20, 50)
     },
+    'ball_detection': {
+        'min_radius': 20,  # Minimum radius of the ball in pixels
+        'max_radius': 40,  # Maximum radius of the ball in pixels
+        'color_range': {
+            'blue': {
+                'hue': (0.55, 0.65),  # Blue hue range in HSV
+                'saturation': (0.4, 1.0),
+                'value': (0.2, 0.8)
+            }
+        }
+    },
     'control': {
         'distance_threshold': 5,  # Distance to consider a point reached
         'control_loop_delay': 0.1,  # Delay between control loop iterations
@@ -223,8 +234,13 @@ class MazeSolver:
             goal_x = int(goal_position[1] * maze_binary.shape[1] / img_gray.shape[1])
             goal_position_scaled = (goal_y, goal_x)
             
+            # Get ball radius from configuration
+            ball_radius = self.config['ball_detection']['min_radius']
+            # Scale ball radius to match the binary maze dimensions
+            ball_radius_scaled = int(ball_radius * maze_binary.shape[0] / img_gray.shape[0])
+            
             # Find path through the maze
-            path, passage_points = solve_maze(maze_binary, start_position, goal_position_scaled)
+            path, passage_points = solve_maze(maze_binary, start_position, goal_position_scaled, ball_radius_scaled)
             
             if path is None:
                 logger.error("No path found through the maze")
@@ -295,7 +311,7 @@ class MazeSolver:
                 image = load_image(image_path)
                 
                 # Get current position
-                x, y = get_current_position(image, x, y, xprec, yprec, False)
+                x, y = get_current_position(image, prev_x=x, prev_y=y, xprec=xprec, yprec=yprec, is_initial=False)
                 xprec, yprec = x, y
                 
                 # Get current target point

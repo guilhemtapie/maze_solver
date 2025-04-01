@@ -271,19 +271,13 @@ def detect_ball(image, plot_result=False, config=None):
         # Convert to HSV color space for better color segmentation
         hsv_image = color.rgb2hsv(image)
         
-        # Define color range for dark red ball
-        # First range (for primary red hues)
-        red_low1 = np.array([0.95, 0.5, 0.2])  # Higher saturation to exclude brown
-        red_high1 = np.array([1.0, 1.0, 0.7])  # Lower value for darker red
+        # Define color range for blue ball
+        # Blue in HSV has a hue around 0.55-0.65
+        blue_low = np.array([0.55, 0.4, 0.2])  # Dark blue lower bound
+        blue_high = np.array([0.65, 1.0, 0.8])  # Dark blue upper bound
         
-        # Second range (for red hues near 0)
-        red_low2 = np.array([0.0, 0.5, 0.2])
-        red_high2 = np.array([0.05, 1.0, 0.7])
-        
-        # Create mask for red color (combine both ranges)
-        mask1 = np.all((hsv_image >= red_low1) & (hsv_image <= red_high1), axis=2)
-        mask2 = np.all((hsv_image >= red_low2) & (hsv_image <= red_high2), axis=2)
-        mask = mask1 | mask2
+        # Create mask for blue color
+        mask = np.all((hsv_image >= blue_low) & (hsv_image <= blue_high), axis=2)
         
         # Apply morphological operations to clean up the mask
         # Use smaller kernels to avoid merging with wall regions
@@ -322,7 +316,7 @@ def detect_ball(image, plot_result=False, config=None):
                 # Show result
                 result_img = image.copy()
                 rr, cc = circle_perimeter(int(cy), int(cx), 20, shape=image.shape)
-                result_img[rr, cc] = [1, 0, 0]  # Red circle
+                result_img[rr, cc] = [0, 0, 1]  # Blue circle
                 plt.subplot(1, 3, 3)
                 plt.imshow(result_img)
                 plt.title("Detection Result")
@@ -544,7 +538,7 @@ decoupage = crop_around_point
 
 def detect_walls(image, plot_result=False, config=None):
     """
-    Detect maze walls using color thresholding and morphological operations.
+    Detect walls in the maze using color thresholding.
     
     Args:
         image (numpy.ndarray): Input image (RGB or grayscale)
@@ -552,8 +546,11 @@ def detect_walls(image, plot_result=False, config=None):
         config (dict, optional): Configuration dictionary
         
     Returns:
-        numpy.ndarray: Binary mask of detected walls
+        numpy.ndarray: Binary mask where walls are True (1) and paths are False (0)
     """
+    if config is None:
+        config = DEFAULT_CONFIG
+    
     try:
         logger.info("Starting wall detection...")
         # Ensure we have an RGB image
@@ -579,9 +576,6 @@ def detect_walls(image, plot_result=False, config=None):
         # Fill small holes
         mask = scnd.binary_fill_holes(mask)
         
-        # Invert the mask since walls should be True (1) and paths should be False (0)
-        mask = ~mask
-        
         logger.info(f"Wall detection completed. Mask shape: {mask.shape}")
         
         if plot_result:
@@ -593,18 +587,18 @@ def detect_walls(image, plot_result=False, config=None):
             plt.title("Original Image")
             plt.axis('off')
             
-            # Show wall mask
+            # Show color mask
             plt.subplot(1, 3, 2)
             plt.imshow(mask, cmap='gray')
             plt.title("Wall Mask")
             plt.axis('off')
             
-            # Show overlay
-            overlay = image.copy()
-            overlay[mask] = [1, 0, 0]  # Mark walls in red
+            # Show result
+            result_img = image.copy()
+            result_img[mask] = [0, 0, 0]  # Mark walls in black
             plt.subplot(1, 3, 3)
-            plt.imshow(overlay)
-            plt.title("Wall Detection Result")
+            plt.imshow(result_img)
+            plt.title("Detection Result")
             plt.axis('off')
             
             plt.tight_layout()
@@ -613,6 +607,5 @@ def detect_walls(image, plot_result=False, config=None):
         return mask
     
     except Exception as e:
-        logger.error(f"Failed to detect walls: {str(e)}")
-        logger.exception("Full traceback:")
-        return np.zeros_like(image[:,:,0]) if len(image.shape) == 3 else np.zeros_like(image) 
+        logger.error(f"Wall detection failed: {str(e)}")
+        return None 

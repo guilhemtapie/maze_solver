@@ -9,6 +9,7 @@ import heapq
 import matplotlib.pyplot as plt
 from skimage import color
 import logging
+from skimage import morphology as scnd
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -26,9 +27,10 @@ class AStar:
         start (tuple): Starting position (y, x)
         goal (tuple): Goal position (y, x)
         neighbors (list): List of possible movement directions
+        ball_radius (int): Radius of the ball in pixels
     """
     
-    def __init__(self, array, start, goal):
+    def __init__(self, array, start, goal, ball_radius=20):
         """
         Initialize the A* path finder.
         
@@ -36,13 +38,24 @@ class AStar:
             array (numpy.ndarray): 2D array representing the maze (0 = free space, 1 = wall)
             start (tuple): Starting position (y, x)
             goal (tuple): Goal position (y, x)
+            ball_radius (int): Radius of the ball in pixels
         """
         self.array = array
         self.start = start
         self.goal = goal
+        self.ball_radius = ball_radius
         # 8-directional movement: horizontal, vertical, and diagonal neighbors
         self.neighbors = [(0, 1), (0, -1), (1, 0), (-1, 0), (1, 1), (1, -1), (-1, 1), (-1, -1)]
         
+        # Thicken walls by ball radius to ensure path keeps safe distance
+        self.thicken_walls()
+    
+    def thicken_walls(self):
+        """Thicken walls by the ball radius to ensure safe path."""
+        kernel_size = 2 * self.ball_radius + 1
+        kernel = np.ones((kernel_size, kernel_size), dtype=bool)
+        self.array = scnd.binary_dilation(self.array, kernel)
+    
     def heuristic(self, a, b):
         """
         Calculate the heuristic (Manhattan distance) between two points.
@@ -84,7 +97,7 @@ class AStar:
         # Check if within bounds
         if 0 <= y < self.array.shape[0] and 0 <= x < self.array.shape[1]:
             # Check if not a wall
-            return self.array[y][x] != 1
+            return not self.array[y, x]
         
         return False
     
@@ -153,7 +166,7 @@ class AStar:
             return []
 
 
-def find_path(maze, start, goal):
+def find_path(maze, start, goal, ball_radius=20):
     """
     Find a path through the maze using the A* algorithm.
     
@@ -161,12 +174,13 @@ def find_path(maze, start, goal):
         maze (numpy.ndarray): 2D array representing the maze (0 = free space, 1 = wall)
         start (tuple): Starting position (y, x)
         goal (tuple): Goal position (y, x)
+        ball_radius (int): Radius of the ball in pixels
         
     Returns:
         list: List of positions forming the path, or empty list if no path found
     """
     try:
-        astar = AStar(maze, start, goal)
+        astar = AStar(maze.copy(), start, goal, ball_radius)
         return astar.find_path()
     except Exception as e:
         logger.error(f"Error finding path: {str(e)}")
@@ -234,7 +248,7 @@ def find_passage_points(path, min_angle_change=0.5):
         return path if path else []
 
 
-def solve_maze(maze, start, goal):
+def solve_maze(maze, start, goal, ball_radius=20):
     """
     Find a solution path through the maze and identify key passage points.
     
@@ -242,13 +256,14 @@ def solve_maze(maze, start, goal):
         maze (numpy.ndarray): 2D array representing the maze (0 = free space, 1 = wall)
         start (tuple): Starting position (y, x)
         goal (tuple): Goal position (y, x)
+        ball_radius (int): Radius of the ball in pixels
         
     Returns:
         tuple: (path, passage_points) or (None, None) if no path found
     """
     try:
         # Find path using A*
-        path = find_path(maze, start, goal)
+        path = find_path(maze, start, goal, ball_radius)
         
         if not path:
             logger.warning("No path found through maze")
@@ -264,7 +279,7 @@ def solve_maze(maze, start, goal):
         return None, None
 
 
-def get_current_position(image, prev_x=None, prev_y=None, is_initial=False):
+def get_current_position(image, prev_x=None, prev_y=None, xprec=None, yprec=None, is_initial=False):
     """
     Determine the current position of the ball in the maze.
     
@@ -272,6 +287,8 @@ def get_current_position(image, prev_x=None, prev_y=None, is_initial=False):
         image (numpy.ndarray): Current image of the maze
         prev_x (int, optional): Previous x position
         prev_y (int, optional): Previous y position
+        xprec (int, optional): Previous x position for trajectory prediction
+        yprec (int, optional): Previous y position for trajectory prediction
         is_initial (bool): Whether this is the initial position
         
     Returns:

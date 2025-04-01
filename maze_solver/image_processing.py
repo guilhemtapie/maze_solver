@@ -31,7 +31,7 @@ DEFAULT_CONFIG = {
     },
     'crop_dimensions': {
         'y_min': 100,    
-        'y_max': 950,    
+        'y_max': 970,    
         'x_min': 150,    
         'x_max': 850     
     },
@@ -560,21 +560,34 @@ def detect_walls(image, plot_result=False, config=None):
         # Convert to HSV color space for better color segmentation
         hsv_image = color.rgb2hsv(image)
         
-        # Define color range for dark brown walls
-        # Brown is a dark orange, which in HSV has a hue around 0.05-0.15
-        brown_low = np.array([0.05, 0.3, 0.1])   # Dark brown lower bound
-        brown_high = np.array([0.15, 0.8, 0.5])  # Dark brown upper bound
+        # Define multiple color ranges for brown walls to catch different shades
+        # Dark brown
+        brown_low1 = np.array([0.05, 0.3, 0.1])
+        brown_high1 = np.array([0.15, 0.9, 0.6])
         
-        # Create mask for brown color
-        mask = np.all((hsv_image >= brown_low) & (hsv_image <= brown_high), axis=2)
+        # Lighter brown
+        brown_low2 = np.array([0.05, 0.2, 0.2])
+        brown_high2 = np.array([0.15, 0.7, 0.7])
+        
+        # Create masks for both brown ranges
+        mask1 = np.all((hsv_image >= brown_low1) & (hsv_image <= brown_high1), axis=2)
+        mask2 = np.all((hsv_image >= brown_low2) & (hsv_image <= brown_high2), axis=2)
+        
+        # Combine masks
+        mask = mask1 | mask2
         
         # Apply morphological operations to clean up the mask
-        # Use larger kernels for walls to connect nearby segments
-        mask = scnd.binary_closing(mask, structure=np.ones((5,5)))
+        # First close small gaps in walls
+        mask = scnd.binary_closing(mask, structure=np.ones((7,7)))
+        
+        # Remove small noise
         mask = scnd.binary_opening(mask, structure=np.ones((3,3)))
         
-        # Fill small holes
+        # Fill holes in walls
         mask = scnd.binary_fill_holes(mask)
+        
+        # One final closing to ensure wall continuity
+        mask = scnd.binary_closing(mask, structure=np.ones((5,5)))
         
         logger.info(f"Wall detection completed. Mask shape: {mask.shape}")
         

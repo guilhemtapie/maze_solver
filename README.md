@@ -61,3 +61,7 @@ You can adjust various parameters in the code to optimize for your specific setu
 - PID parameters in `pid_controller.py`
 - Image processing parameters in `image_processing.py`
 - Path finding parameters in `path_finding.py`
+
+## Contributors 🚀
+
+Guihlem Tapie, Ilias El Ganaoui, Vincent Barrier 

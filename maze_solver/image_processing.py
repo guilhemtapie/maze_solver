@@ -14,7 +14,7 @@ from skimage.feature import canny
 import scipy.ndimage as scnd
 import skimage.morphology as morph
 from PIL import Image
-from picamera2 import Picamera2, Preview
+#from picamera2 import Picamera2, Preview
 import time
 import os
 import logging
@@ -30,10 +30,10 @@ DEFAULT_CONFIG = {
         'current_image_template': "/home/labybille/Desktop/new_proj/code_python/images/current_image{}.jpg"
     },
     'crop_dimensions': {
-        'y_min': 100,    
-        'y_max': 970,    
-        'x_min': 150,    
-        'x_max': 850     
+        'y_min': 80,    
+        'y_max': 1000,    
+        'x_min': 100,    
+        'x_max': 900     
     },
     'ball_detection': {
         'sigma': 0.5,            # Reduced to detect finer edges
@@ -536,12 +536,13 @@ redim_image = resize_image
 eppaissir_les_murs = thicken_walls
 decoupage = crop_around_point
 
-def detect_walls(image, plot_result=False, config=None):
+def detect_walls(image, ball_position=None, plot_result=False, config=None):
     """
-    Detect walls in the maze using color thresholding.
+    Detect walls in the maze using edge detection and adaptive thresholding.
     
     Args:
         image (numpy.ndarray): Input image (RGB or grayscale)
+        ball_position (tuple, optional): (x, y) coordinates of the ball
         plot_result (bool): Whether to plot the detection result
         config (dict, optional): Configuration dictionary
         
@@ -553,43 +554,58 @@ def detect_walls(image, plot_result=False, config=None):
     
     try:
         logger.info("Starting wall detection...")
-        # Ensure we have an RGB image
-        if len(image.shape) == 2:
-            image = color.gray2rgb(image)
         
-        # Convert to HSV color space for better color segmentation
-        hsv_image = color.rgb2hsv(image)
+        # Convert to grayscale if needed
+        if len(image.shape) == 3:
+            gray = color.rgb2gray(image)
+        else:
+            gray = image
         
-        # Define multiple color ranges for brown walls to catch different shades
-        # Dark brown
-        brown_low1 = np.array([0.05, 0.3, 0.1])
-        brown_high1 = np.array([0.15, 0.9, 0.6])
+        # Create ball mask if ball position is provided
+        ball_mask = np.zeros_like(gray, dtype=bool)
+        if ball_position is not None:
+            ball_radius = config['ball_detection']['min_radius']
+            y, x = np.ogrid[:gray.shape[0], :gray.shape[1]]
+            ball_mask = ((x - ball_position[0])**2 + (y - ball_position[1])**2 <= ball_radius**2)
         
-        # Lighter brown
-        brown_low2 = np.array([0.05, 0.2, 0.2])
-        brown_high2 = np.array([0.15, 0.7, 0.7])
+        # Apply stronger Gaussian blur to reduce noise while preserving edges
+        blurred = filters.gaussian(gray, sigma=1.5)
         
-        # Create masks for both brown ranges
-        mask1 = np.all((hsv_image >= brown_low1) & (hsv_image <= brown_high1), axis=2)
-        mask2 = np.all((hsv_image >= brown_low2) & (hsv_image <= brown_high2), axis=2)
+        # Use Canny edge detection with adjusted parameters for better edge detection
+        edges = canny(blurred, sigma=1.5, low_threshold=0.08, high_threshold=0.25)
         
-        # Combine masks
-        mask = mask1 | mask2
+        # Exclude ball edges from wall detection
+        edges[ball_mask] = False
         
-        # Apply morphological operations to clean up the mask
-        # First close small gaps in walls
-        mask = scnd.binary_closing(mask, structure=np.ones((7,7)))
+        # Calculate adaptive kernel sizes based on image dimensions
+        height, width = image.shape[:2]
+        closing_kernel = max(7, int(min(height, width) / 40))  # Increased kernel size
+        opening_kernel = max(3, int(min(height, width) / 100))
+        
+        # First, connect nearby edges with a dilation operation
+        edges = scnd.binary_dilation(edges, structure=np.ones((3, 3)))
+        
+        # Apply morphological operations to connect edges and form walls
+        # Use multiple closing operations with different kernel sizes
+        mask = edges.copy()
+        for kernel_size in [closing_kernel // 2, closing_kernel]:
+            mask = scnd.binary_closing(mask, structure=np.ones((kernel_size, kernel_size)))
         
         # Remove small noise
-        mask = scnd.binary_opening(mask, structure=np.ones((3,3)))
+        mask = scnd.binary_opening(mask, structure=np.ones((opening_kernel, opening_kernel)))
         
         # Fill holes in walls
         mask = scnd.binary_fill_holes(mask)
         
-        # One final closing to ensure wall continuity
-        mask = scnd.binary_closing(mask, structure=np.ones((5,5)))
+        # One final closing with a large kernel to ensure wall continuity
+        final_kernel = max(9, int(min(height, width) / 30))
+        mask = scnd.binary_closing(mask, structure=np.ones((final_kernel, final_kernel)))
+        
+        # Remove any remaining small objects using skimage.morphology
+        mask = morph.remove_small_objects(mask, min_size=100)
         
         logger.info(f"Wall detection completed. Mask shape: {mask.shape}")
+        logger.info(f"Mask statistics - Walls: {np.sum(mask)}, Paths: {np.sum(~mask)}")
         
         if plot_result:
             plt.figure(figsize=(15, 5))
@@ -600,18 +616,16 @@ def detect_walls(image, plot_result=False, config=None):
             plt.title("Original Image")
             plt.axis('off')
             
-            # Show color mask
+            # Show edges
             plt.subplot(1, 3, 2)
-            plt.imshow(mask, cmap='gray')
-            plt.title("Wall Mask")
+            plt.imshow(edges, cmap='gray')
+            plt.title("Edge Detection")
             plt.axis('off')
             
             # Show result
-            result_img = image.copy()
-            result_img[mask] = [0, 0, 0]  # Mark walls in black
             plt.subplot(1, 3, 3)
-            plt.imshow(result_img)
-            plt.title("Detection Result")
+            plt.imshow(mask, cmap='gray')
+            plt.title("Wall Detection")
             plt.axis('off')
             
             plt.tight_layout()

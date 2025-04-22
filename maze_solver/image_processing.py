@@ -14,7 +14,7 @@ from skimage.feature import canny
 import scipy.ndimage as scnd
 import skimage.morphology as morph
 from PIL import Image
-#from picamera2 import Picamera2, Preview
+from picamera2 import Picamera2, Preview
 import time
 import os
 import logging
@@ -57,7 +57,7 @@ DEFAULT_CONFIG = {
     'resize_dimensions': (1000, 1000)
 }
 
-# Add detect_walls to the list of exposed functions at the top of the file
+# Update the __all__ list to remove unused functions
 __all__ = [
     'initialize_camera',
     'capture_image',
@@ -68,10 +68,10 @@ __all__ = [
     'enhance_walls',
     'detect_ball',
     'mark_points_on_image',
-    'plot_images',
     'thicken_walls',
-    'crop_around_point',
-    'detect_walls'
+    'detect_walls',
+    'fast_ball_detection',
+    'capture_image_fast'
 ]
 
 # Camera functions
@@ -145,29 +145,38 @@ def load_image(image_path):
         raise
 
 # Image preprocessing functions
-def crop_image(image, config=None):
+def crop_image(image):
     """
-    Crop the input image.
+    Crop the image to the specified dimensions.
     
     Args:
-        image (numpy.ndarray): Input image
-        config (dict, optional): Configuration dictionary
+        image (numpy.ndarray): The input image
         
     Returns:
-        numpy.ndarray: Cropped image
+        numpy.ndarray: The cropped image
     """
-    if config is None:
-        config = DEFAULT_CONFIG
-    
     try:
-        crop_dims = config['crop_dimensions']
-        cropped = image[crop_dims['y_min']:crop_dims['y_max'], 
-                        crop_dims['x_min']:crop_dims['x_max']]
-        logger.debug(f"Image cropped from {image.shape} to {cropped.shape}")
+        # Get crop dimensions from DEFAULT_CONFIG
+        crop_dims = DEFAULT_CONFIG['crop_dimensions']
+        y_min = crop_dims['y_min']
+        y_max = crop_dims['y_max']
+        x_min = crop_dims['x_min']
+        x_max = crop_dims['x_max']
+        
+        # Ensure dimensions are within image bounds
+        y_min = max(0, min(y_min, image.shape[0]))
+        y_max = max(0, min(y_max, image.shape[0]))
+        x_min = max(0, min(x_min, image.shape[1]))
+        x_max = max(0, min(x_max, image.shape[1]))
+        
+        # Crop the image
+        cropped = image[y_min:y_max, x_min:x_max]
+        logger.info(f"Cropped image shape: {cropped.shape}")
         return cropped
+        
     except Exception as e:
-        logger.error(f"Failed to crop image: {str(e)}")
-        return image  # Return original image if cropping fails
+        logger.error(f"Error cropping image: {str(e)}")
+        return image
 
 def convert_to_grayscale(image):
     """
@@ -313,10 +322,12 @@ def detect_ball(image, plot_result=False, config=None):
                 plt.title("Color Mask")
                 plt.axis('off')
                 
-                # Show result
+                # Show result with thicker red circle
                 result_img = image.copy()
-                rr, cc = circle_perimeter(int(cy), int(cx), 20, shape=image.shape)
-                result_img[rr, cc] = [0, 0, 1]  # Blue circle
+                # Draw multiple circles with different radii to create a thicker circle
+                for radius in range(18, 23):  # Draw circles with radii from 18 to 22
+                    rr, cc = circle_perimeter(int(cy), int(cx), radius, shape=image.shape)
+                    result_img[rr, cc] = [1, 0, 0]  # Red circle
                 plt.subplot(1, 3, 3)
                 plt.imshow(result_img)
                 plt.title("Detection Result")
@@ -324,6 +335,7 @@ def detect_ball(image, plot_result=False, config=None):
                 
                 plt.tight_layout()
                 plt.show()
+                plt.close()
             
             return [int(cx)], [int(cy)]
         else:
@@ -345,6 +357,7 @@ def detect_ball(image, plot_result=False, config=None):
                 
                 plt.tight_layout()
                 plt.show()
+                plt.close()
             
             return [], []
     
@@ -384,36 +397,40 @@ def plot_ball_detection(image, cy, cx, radii):
 
 def mark_points_on_image(image, cx, cy, color=(255, 0, 0)):
     """
-    Mark detected points on the image.
+    Mark points on an image.
     
     Args:
         image (numpy.ndarray): Input image
-        cx (list): X coordinates of points
-        cy (list): Y coordinates of points
-        color (tuple): RGB color for marking
+        cx (list): List of x coordinates
+        cy (list): List of y coordinates
+        color (tuple): RGB color tuple
         
     Returns:
         numpy.ndarray: Image with marked points
     """
     try:
-        marked_image = np.copy(image)
+        # Convert to uint8 if not already
+        if image.dtype != np.uint8:
+            image = img_as_ubyte(image)
         
         # Convert to RGB if grayscale
-        if len(marked_image.shape) == 2:
-            marked_image = color.gray2rgb(marked_image)
+        if len(image.shape) == 2:
+            image = np.stack((image,) * 3, axis=-1)
         
-        # Draw circles at each point
-        for i in range(len(cx)):
-            rr, cc = circle_perimeter(cy[i], cx[i], 10)
-            try:
-                marked_image[rr, cc] = color
-            except IndexError:
-                pass
+        # Mark each point
+        for x, y in zip(cx, cy):
+            rr, cc = circle_perimeter(int(y), int(x), 5)
+            
+            # Filter out points outside image bounds
+            mask = (rr >= 0) & (rr < image.shape[0]) & (cc >= 0) & (cc < image.shape[1])
+            rr, cc = rr[mask], cc[mask]
+            
+            image[rr, cc] = color
         
-        return marked_image
+        return image
     
     except Exception as e:
-        logger.error(f"Failed to mark points on image: {str(e)}")
+        logger.error(f"Error marking points on image: {str(e)}")
         return image
 
 # Morphological operations
@@ -445,23 +462,23 @@ def create_structuring_element(shape="square", size=3):
 
 def thicken_walls(binary_image, kernel_size=3):
     """
-    Thicken walls in the maze using binary dilation.
+    Thicken walls in a binary image.
     
     Args:
-        binary_image (numpy.ndarray): Binary image of the maze
-        kernel_size (int): Size of the kernel for dilation
+        binary_image (numpy.ndarray): Binary image
+        kernel_size (int): Size of the dilation kernel
         
     Returns:
         numpy.ndarray: Image with thickened walls
     """
     try:
         kernel = np.ones((kernel_size, kernel_size), np.uint8)
-        thickened = scnd.binary_dilation(binary_image, kernel)
+        thickened = morph.binary_dilation(binary_image, kernel)
         logger.debug(f"Walls thickened with kernel size {kernel_size}")
         return thickened
     
     except Exception as e:
-        logger.error(f"Failed to thicken walls: {str(e)}")
+        logger.error(f"Error thickening walls: {str(e)}")
         return binary_image
 
 # Utility functions
@@ -536,7 +553,7 @@ redim_image = resize_image
 eppaissir_les_murs = thicken_walls
 decoupage = crop_around_point
 
-def detect_walls(image, ball_position=None, plot_result=False, config=None):
+def detect_walls(image, ball_position=None, plot_result=False):
     """
     Detect walls in the maze using edge detection and adaptive thresholding.
     
@@ -544,14 +561,10 @@ def detect_walls(image, ball_position=None, plot_result=False, config=None):
         image (numpy.ndarray): Input image (RGB or grayscale)
         ball_position (tuple, optional): (x, y) coordinates of the ball
         plot_result (bool): Whether to plot the detection result
-        config (dict, optional): Configuration dictionary
         
     Returns:
         numpy.ndarray: Binary mask where walls are True (1) and paths are False (0)
     """
-    if config is None:
-        config = DEFAULT_CONFIG
-    
     try:
         logger.info("Starting wall detection...")
         
@@ -564,7 +577,7 @@ def detect_walls(image, ball_position=None, plot_result=False, config=None):
         # Create ball mask if ball position is provided
         ball_mask = np.zeros_like(gray, dtype=bool)
         if ball_position is not None:
-            ball_radius = config['ball_detection']['min_radius']
+            ball_radius = DEFAULT_CONFIG['ball_detection']['min_radius']
             y, x = np.ogrid[:gray.shape[0], :gray.shape[1]]
             ball_mask = ((x - ball_position[0])**2 + (y - ball_position[1])**2 <= ball_radius**2)
         
@@ -630,9 +643,108 @@ def detect_walls(image, ball_position=None, plot_result=False, config=None):
             
             plt.tight_layout()
             plt.show()
+            plt.close()
         
         return mask
     
     except Exception as e:
         logger.error(f"Wall detection failed: {str(e)}")
-        return None 
+        return None
+
+def fast_ball_detection(image, prev_position=None, config=None):
+    """
+    Fast ball detection optimized for real-time tracking.
+    Uses a smaller search area around the previous position if available.
+    
+    Args:
+        image (numpy.ndarray): Input image
+        prev_position (tuple, optional): Previous (x, y) position of the ball
+        config (dict, optional): Configuration dictionary
+        
+    Returns:
+        tuple: (x, y) coordinates of the ball
+    """
+    if config is None:
+        config = DEFAULT_CONFIG
+    
+    try:
+        # Reduce image size for faster processing
+        scale_factor = 0.5
+        small_image = image[::2, ::2]
+        
+        # Convert to HSV for better color segmentation
+        hsv = color.rgb2hsv(small_image)
+        
+        # Define blue color range in HSV (pre-computed for speed)
+        blue_low = np.array([0.55, 0.4, 0.2])
+        blue_high = np.array([0.65, 1.0, 0.8])
+        
+        # Create mask for blue color using vectorized operations
+        mask = np.all((hsv >= blue_low) & (hsv <= blue_high), axis=2)
+        
+        # If we have a previous position, only search in a small area around it
+        if prev_position is not None:
+            # Scale down the previous position
+            prev_x = int(prev_position[0] * scale_factor)
+            prev_y = int(prev_position[1] * scale_factor)
+            
+            search_radius = 25  # Reduced search radius since image is smaller
+            y_min = max(0, prev_y - search_radius)
+            y_max = min(mask.shape[0], prev_y + search_radius)
+            x_min = max(0, prev_x - search_radius)
+            x_max = min(mask.shape[1], prev_x + search_radius)
+            
+            # Create a mask for the search area
+            search_mask = np.zeros_like(mask, dtype=bool)
+            search_mask[y_min:y_max, x_min:x_max] = True
+            mask = mask & search_mask
+        
+        # Find connected components with minimal morphological operations
+        labeled_mask, num_features = scnd.label(mask)
+        
+        if num_features > 0:
+            # Find the largest blob
+            sizes = np.bincount(labeled_mask.ravel())[1:]
+            largest_blob = np.argmax(sizes) + 1
+            
+            # Get the centroid
+            cy, cx = np.mean(np.where(labeled_mask == largest_blob), axis=1)
+            
+            # Scale back up the coordinates
+            return int(cx * 2), int(cy * 2)
+        
+        return None, None
+    
+    except Exception as e:
+        logger.error(f"Fast ball detection failed: {str(e)}")
+        return None, None
+
+def capture_image_fast(camera, image_number=0, config=None):
+    """
+    Fast image capture that avoids file I/O by using camera buffer directly.
+    
+    Args:
+        camera: Camera object
+        image_number (int): Image number (for logging only)
+        config (dict, optional): Configuration dictionary
+        
+    Returns:
+        numpy.ndarray: Captured image in RGB format
+    """
+    if config is None:
+        config = DEFAULT_CONFIG
+    
+    try:
+        # Capture directly to memory
+        image = camera.capture_array()
+        
+        # Convert from RGBA to RGB if needed
+        if image.shape[-1] == 4:  # If image has alpha channel
+            image = image[..., :3]  # Keep only RGB channels
+        
+        logger.debug(f"Image captured: shape={image.shape}")
+        return image
+    
+    except Exception as e:
+        logger.error(f"Failed to capture image: {str(e)}")
+        raise 

@@ -198,7 +198,7 @@ def solve_maze(maze, start, goal, ball_radius=20):
         astar = AStar(maze.copy(), start, goal, ball_radius)
         return astar.find_path()
     except Exception as e:
-        logger.error(f"Error finding path: {str(e)}")
+        logger.error(f"Error solving maze: {str(e)}")
         return None
 
 
@@ -394,13 +394,6 @@ def visualize_path(maze, path, passage_points=None, current_position=None):
 
 
 # Aliases for backward compatibility
-module = lambda x, y: np.sqrt(x**2 + y**2)
 heuristic = lambda a, b: abs(a[0] - b[0]) + abs(a[1] - b[1])
 astar = solve_maze
-trouver_max_de_marge = lambda *args: None  # Placeholder
-trouver_chemin_avec_le_max_de_marge = lambda *args: None  # Placeholder
-trouver_point_de_passage = find_passage_points
-solution_labyrinthe = solve_maze
-position_actuelle = get_current_position
-norme = calculate_distance
-point_proche = find_next_target_point 
+solution_labyrinthe = solve_maze 

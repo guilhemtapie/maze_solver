@@ -31,7 +31,7 @@ from .motor_control import initialize_motors, move_motors, move_motors_init_pos,
 from .image_processing import (
     initialize_camera, capture_image, load_image, crop_image, convert_to_grayscale,
     resize_image, enhance_walls, detect_ball, mark_points_on_image, plot_images,
-    thicken_walls, crop_around_point, detect_walls
+    thicken_walls, crop_around_point, detect_walls, capture_image_fast, fast_ball_detection
 )
 from .path_finding import (
     solve_maze, get_current_position, calculate_distance,
@@ -44,6 +44,12 @@ DEFAULT_CONFIG = {
     'image_paths': {
         'first_image': "/home/labybille/Desktop/new_proj/code_python/images/first_image.jpg",
         'current_image_template': "/home/labybille/Desktop/new_proj/code_python/images/current_image{}.jpg"
+    },
+    'crop_dimensions': {
+        'y_min': 80,    
+        'y_max': 1000,    
+        'x_min': 100,    
+        'x_max': 900     
     },
     'goal_detection': {
         'method': 'fixed',  # 'fixed', 'marker', or 'color'
@@ -64,9 +70,9 @@ DEFAULT_CONFIG = {
     },
     'control': {
         'distance_threshold': 5,  # Distance to consider a point reached
-        'control_loop_delay': 0.1,  # Delay between control loop iterations
         'max_iterations': 1000,  # Maximum number of iterations
-        'debug_visualization': False  # Whether to show debug visualizations
+        'debug_visualization': False,  # Whether to show debug visualizations
+        'compare_detection': True  # Whether to compare fast and classic ball detection
     }
 }
 
@@ -80,6 +86,7 @@ class MazeSolver:
         camera (Picamera2): Camera object
         motor1 (Ax12): First motor object
         motor2 (Ax12): Second motor object
+        maze_binary (numpy.ndarray): Binary maze representation
     """
     
     def __init__(self, config=None):
@@ -93,6 +100,7 @@ class MazeSolver:
         self.camera = None
         self.motor1 = None
         self.motor2 = None
+        self.maze_binary = None
         logger.info("MazeSolver initialized")
     
     def setup(self):
@@ -164,19 +172,14 @@ class MazeSolver:
             return (height // 4, width // 4)
     
     def process_image(self, image):
-        """
-        Process the image to prepare it for path finding.
-        
-        Args:
-            image (numpy.ndarray): Raw image from the camera
-            
-        Returns:
-            tuple: (processed_image, original_scale_image, ball_position)
-        """
+        """Process a single image to detect walls and ball."""
         try:
-            import time
             start_time = time.time()
             logger.info("Starting image processing...")
+            
+            # Save raw image for debugging
+            plt.imsave('raw_camera_image.png', image)
+            logger.info("Raw camera image saved")
             
             # Crop the image
             crop_start = time.time()
@@ -189,13 +192,13 @@ class MazeSolver:
             # Detect the ball position first
             ball_start = time.time()
             logger.info("Detecting ball...")
-            cx, cy = detect_ball(img_cropped, self.config['control']['debug_visualization'])
+            ball_x, ball_y = detect_ball(img_cropped, plot_result=self.config['control']['debug_visualization'], config=self.config)
             
-            if len(cx) == 0 or len(cy) == 0:
+            if not ball_x or not ball_y:
                 logger.warning("Ball not detected in the image")
                 ball_position = None
             else:
-                ball_position = (cx[0], cy[0])
+                ball_position = (ball_x[0], ball_y[0])
                 logger.info(f"Ball detected at position: {ball_position}")
             ball_time = time.time() - ball_start
             logger.info(f"=== Ball detection completed in {ball_time:.3f} seconds ===")
@@ -213,131 +216,83 @@ class MazeSolver:
             logger.info(f"=== Total image processing completed in {total_time:.3f} seconds ===")
             
             return maze_binary, img_cropped, ball_position
-        
-        except Exception as e:
-            logger.error(f"Image processing failed: {str(e)}")
-            logger.exception("Full traceback:")  # This will print the full traceback
-            return None, None, None
-    
-    def solve_maze_from_image(self, image, ball_position=None):
-        """
-        Solve the maze from an image.
-        
-        Args:
-            image (numpy.ndarray): Input image
-            ball_position (tuple, optional): (x, y) coordinates of the ball
             
-        Returns:
-            list: List of (x, y) coordinates representing the path
-        """
+        except Exception as e:
+            logger.error(f"Error processing image: {str(e)}")
+            return None, None, None
+
+    def solve_maze_from_image(self, image):
+        """Process an image and solve the maze."""
         try:
-            import time
             start_time = time.time()
             
-            # Process the image to get the binary maze
-            binary_maze, cropped_image, ball_pos = self.process_image(image)
+            # Process image
+            process_start = time.time()
+            maze_binary, cropped_image, ball_position = self.process_image(image)
+            process_time = time.time() - process_start
+            logger.info(f"Image processing total time: {process_time:.3f} seconds")
             
-            if binary_maze is None:
+            if maze_binary is None or ball_position is None:
                 logger.error("Failed to process image")
-                return None
+                return None, None
             
-            # Get ball radius from config
-            ball_radius = self.config['ball_detection']['min_radius']
+            # Convert to binary maze
+            maze_start = time.time()
+            self.maze_binary = maze_binary.astype(np.uint8)
+            maze_time = time.time() - maze_start
+            logger.info(f"Maze binary conversion time: {maze_time:.3f} seconds")
             
-            # Debug logging
-            logger.info(f"Binary maze shape: {binary_maze.shape}")
-            logger.info(f"Binary maze unique values: {np.unique(binary_maze)}")
-            logger.info(f"Ball position: {ball_pos}")
-            logger.info(f"Ball radius: {ball_radius}")
-            
-            # Save the binary maze for debugging
-            np.save('binary_maze.npy', binary_maze)
-            logger.info("Saved binary maze to binary_maze.npy")
-            
-            # Visualize the binary maze
-            if self.config['control']['debug_visualization']:
-                plt.figure(figsize=(10, 5))
-                plt.subplot(1, 2, 1)
-                plt.imshow(cropped_image)
-                plt.title("Original Image")
-                plt.axis('off')
-                
-                plt.subplot(1, 2, 2)
-                plt.imshow(binary_maze, cmap='gray')
-                plt.title("Binary Maze (White = Walls)")
-                plt.axis('off')
-                plt.show()
+            # Save the binary maze array
+            np.save('binary_maze.npy', self.maze_binary)
+            logger.info("Saved binary maze array to binary_maze.npy")
             
             # Get start and goal positions
-            # ball_pos is in (x, y) format, convert to (y, x) for maze coordinates
-            start = (ball_pos[1], ball_pos[0])  # Convert from (x, y) to (y, x)
+            if ball_position is None:
+                logger.error("No ball position available for pathfinding")
+                return None, None
+                
+            # ball_position is in (x, y) format, convert to (y, x) for maze coordinates
+            start = (ball_position[1], ball_position[0])  # Convert from (x, y) to (y, x)
             
-            # Get goal position from config
-            goal = self.config['goal_detection']['fixed_position']
-            logger.info(f"Using configured goal position: {goal}")
+            # Use fixed goal position (200, 200)
+            goal = (200, 200)
+            logger.info(f"Using fixed goal position: {goal}")
             
             # Verify goal position is within bounds
-            height, width = binary_maze.shape
+            height, width = self.maze_binary.shape
             if not (0 <= goal[0] < height and 0 <= goal[1] < width):
-                logger.error(f"Goal position {goal} is out of bounds. Maze shape is {binary_maze.shape}")
-                # Try to find a valid goal position in the lower right quadrant
-                for y in range(height-1, height//2, -1):
-                    for x in range(width-1, width//2, -1):
-                        if not binary_maze[y, x]:  # If it's a free space
-                            goal = (y, x)
-                            logger.info(f"Found alternative goal position: {goal}")
-                            break
-                    if goal is not None:
-                        break
+                logger.error(f"Goal position {goal} is out of bounds. Maze shape is {self.maze_binary.shape}")
+                return None, None
             
             # Debug logging for start and goal positions
             logger.info(f"Start position (y, x): {start}")
             logger.info(f"Goal position (y, x): {goal}")
             
             # Check if start or goal positions are on walls
-            if binary_maze[start[0], start[1]]:
+            if self.maze_binary[start[0], start[1]]:
                 logger.error(f"Start position {start} is on a wall")
-                return None
-            if binary_maze[goal[0], goal[1]]:
+                return None, None
+            if self.maze_binary[goal[0], goal[1]]:
                 logger.error(f"Goal position {goal} is on a wall")
-                # Try to find nearest free space
-                radius = 1
-                max_radius = 20  # Maximum search radius
-                while radius < max_radius:
-                    for dy in range(-radius, radius + 1):
-                        for dx in range(-radius, radius + 1):
-                            new_y, new_x = goal[0] + dy, goal[1] + dx
-                            if (0 <= new_y < height and 0 <= new_x < width and 
-                                not binary_maze[new_y, new_x]):
-                                goal = (new_y, new_x)
-                                logger.info(f"Adjusted goal position to nearest free space: {goal}")
-                                break
-                        if not binary_maze[goal[0], goal[1]]:
-                            break
-                    if not binary_maze[goal[0], goal[1]]:
-                        break
-                    radius += 1
-                if binary_maze[goal[0], goal[1]]:
-                    logger.error("Could not find a valid goal position")
-                    return None
+                return None, None
             
-            # Find path using the A* implementation
+            # Find path
             path_start = time.time()
             logger.info("Starting path finding...")
-            path = solve_maze(binary_maze, start, goal, ball_radius)
+            path = solve_maze(self.maze_binary, start, goal)
             path_time = time.time() - path_start
             logger.info(f"=== Path finding completed in {path_time:.3f} seconds ===")
             
             if path is None or len(path) == 0:
                 logger.warning("No path found from start to goal")
-                return None
+                return None, None
             
             logger.info(f"Path found with {len(path)} points")
             
-            # Visualize the path if found
-            if self.config['control']['debug_visualization'] and path:
+            # Display path visualization if debug_visualization is enabled
+            if self.config['control']['debug_visualization']:
                 plt.figure(figsize=(10, 10))
-                plt.imshow(binary_maze, cmap='gray')
+                plt.imshow(self.maze_binary, cmap='gray')
                 path_y, path_x = zip(*path)
                 plt.plot(path_x, path_y, 'r-', linewidth=2)
                 plt.plot(start[1], start[0], 'go', markersize=10, label='Start')
@@ -346,15 +301,16 @@ class MazeSolver:
                 plt.title("Path Found")
                 plt.axis('off')
                 plt.show()
+                plt.close()
             
             total_time = time.time() - start_time
             logger.info(f"=== Total maze solving completed in {total_time:.3f} seconds ===")
             
-            return path
-            
+            return path, ball_position
+        
         except Exception as e:
-            logger.error(f"Maze solving failed: {str(e)}")
-            return None
+            logger.error(f"Error solving maze: {str(e)}")
+            return None, None
     
     def navigate_maze(self):
         """
@@ -365,14 +321,13 @@ class MazeSolver:
         """
         try:
             # Capture initial image
-            image_path = capture_image(self.camera, 0)
+            image_path = capture_image(self.camera, 0, self.config)
             image = load_image(image_path)
             
-            # Solve the maze
-            path = self.solve_maze_from_image(image)
-            
-            if path is None:
-                logger.error("Failed to solve maze, cannot navigate")
+            # Solve the maze and get initial ball position
+            path, ball_position = self.solve_maze_from_image(image)
+            if path is None or ball_position is None:
+                logger.error("Failed to solve maze or get ball position, cannot navigate")
                 return False
             
             # Reset PID controllers
@@ -380,47 +335,92 @@ class MazeSolver:
             
             # Initialize variables for navigation
             current_point_index = 0
-            x, y = path[0][1], path[0][0]  # Convert from (y, x) to (x, y)
+            x, y = ball_position  # Use initial ball position
             xprec, yprec = x, y
             iteration = 0
             max_iterations = self.config['control']['max_iterations']
             distance_threshold = self.config['control']['distance_threshold']
-            control_loop_delay = self.config['control']['control_loop_delay']
             
             # Main control loop
             logger.info("Starting navigation...")
             
             while current_point_index < len(path) and iteration < max_iterations:
-                # Capture current image
-                image_path = capture_image(self.camera, iteration + 1)
-                image = load_image(image_path)
+                loop_start = time.time()
                 
-                # Get current position
-                x, y = get_current_position(image, prev_x=x, prev_y=y, xprec=xprec, yprec=yprec, is_initial=False)
-                xprec, yprec = x, y
+                # Capture current image
+                capture_start = time.time()
+                image = capture_image_fast(self.camera, config=self.config)
+                capture_time = time.time() - capture_start
+                
+                # Get current position using fast detection
+                position_start = time.time()
+                new_x, new_y = fast_ball_detection(image, prev_position=(x, y), config=self.config)
+                if new_x is not None and new_y is not None:
+                    x, y = new_x, new_y
+                    xprec, yprec = x, y
+                    logger.info(f"Ball detected at position: ({x}, {y})")
+                else:
+                    logger.warning("Ball detection failed, using previous position")
+                    x, y = xprec, yprec
+                position_time = time.time() - position_start
                 
                 # Get current target point
                 target_point = path[current_point_index]
+                logger.info(f"Current target point: {target_point}")
+                
+                # Visualize current position and target if debug_visualization is enabled
+                if self.config['control']['debug_visualization']:
+                    plt.figure(figsize=(10, 10))
+                    plt.imshow(self.maze_binary, cmap='gray')
+                    plt.plot(x, y, 'bo', markersize=10, label='Current Position')
+                    plt.plot(target_point[1], target_point[0], 'ro', markersize=10, label='Target Position')
+                    plt.title(f"Navigation Step {iteration}")
+                    plt.legend()
+                    plt.axis('off')
+                    plt.show()
+                    plt.close()
                 
                 # Calculate motor positions using PID
+                pid_start = time.time()
+                # Pass target point directly since it's already in (y, x) format
                 motor1_position, motor2_position = adjust_motor_movement(x, y, target_point)
+                if motor1_position is None or motor2_position is None:
+                    logger.error("PID calculation failed to produce valid motor positions")
+                    break
+                logger.info(f"Calculated motor positions: M1={motor1_position}, M2={motor2_position}")
+                pid_time = time.time() - pid_start
                 
                 # Move motors
-                move_motors(self.motor1, self.motor2, motor1_position, motor2_position)
+                motor_start = time.time()
+                try:
+                    move_motors(self.motor1, self.motor2, motor1_position, motor2_position)
+                    logger.info("Motors moved successfully")
+                except Exception as e:
+                    logger.error(f"Failed to move motors: {str(e)}")
+                    break
+                motor_time = time.time() - motor_start
                 
                 # Check if we've reached the current target point
                 distance_to_target = calculate_distance(x, y, target_point[1], target_point[0])
-                logger.debug(f"Distance to target: {distance_to_target:.2f}, threshold: {distance_threshold}")
+                logger.info(f"Distance to target: {distance_to_target:.2f} pixels")
                 
                 if distance_to_target < distance_threshold:
                     current_point_index += 1
                     logger.info(f"Reached point {current_point_index} of {len(path)}")
                 
+                # Calculate total loop time
+                loop_time = time.time() - loop_start
+                
+                # Log timing information
+                logger.info(f"Iteration {iteration} timing:")
+                logger.info(f"  Image capture: {capture_time:.3f} seconds")
+                logger.info(f"  Position detection: {position_time:.3f} seconds")
+                logger.info(f"  PID calculation: {pid_time:.3f} seconds")
+                logger.info(f"  Motor movement: {motor_time:.3f} seconds")
+                logger.info(f"  Total loop time: {loop_time:.3f} seconds")
+                
                 # Increment iteration counter
                 iteration += 1
-                
-                # Delay for control loop rate
-                time.sleep(control_loop_delay)
             
             # Check if we've reached the goal
             if current_point_index >= len(path):
